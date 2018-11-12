@@ -1,0 +1,14 @@
+FROM golang:1.10 AS BUILD
+
+WORKDIR /go/src/app
+COPY ./agent ./
+
+RUN go get -v -d .
+
+RUN CGO_ENABLED=0 GOOS=linux go build -a cmd/oklogging-agent.go
+
+FROM alpine
+
+COPY --from=BUILD /go/src/app/oklogging-agent /
+
+CMD ["/oklogging-agent"]
