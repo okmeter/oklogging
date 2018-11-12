@@ -14,6 +14,8 @@ import (
 
 const (
 	timeout = 10 * time.Second
+	maxLogSize = 1 * 1024 * 1024 * 1024
+	backupLogDateFormat = "2006-01-02T15-04-05.000"
 )
 
 type Msg struct {
@@ -84,6 +86,7 @@ func listenAndServe(listen string, logDir string) (error) {
 	}
 }
 
+
 func handleConnection(conn net.Conn, logDir string) {
 	defer conn.Close()
 	msg := &Msg{}
@@ -110,7 +113,22 @@ func handleConnection(conn net.Conn, logDir string) {
 		return
 	}
 
-	f, err := os.OpenFile(path.Join(logDir, dockerName + ".log"), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
+	logPath := path.Join(logDir, dockerName + ".log")
+	currentSize := int64(0)
+
+	if fi, err := os.Stat(logPath); err == nil {
+		currentSize = fi.Size()
+		if currentSize >= maxLogSize {
+			err := os.Rename(logPath,
+				path.Join(logDir, dockerName + "-" + time.Now().Format(backupLogDateFormat)+ ".log"))
+			if err != nil {
+				log.Println("failed to move log", err)
+			}
+			return
+		}
+	}
+
+	f, err := os.OpenFile(logPath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
 	if err != nil {
 		log.Println(err)
 		return
@@ -128,6 +146,11 @@ func handleConnection(conn net.Conn, logDir string) {
 		}
 		if err := sendResponse(conn, 200, timeout); err != nil {
 			log.Println("failed to write response", err)
+			return
+		}
+		currentSize += int64(msg.Len())
+		if currentSize >= maxLogSize {
+			log.Printf("closing connection with %s for log rotation", conn.RemoteAddr())
 			return
 		}
 	}
