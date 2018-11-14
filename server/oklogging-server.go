@@ -10,12 +10,18 @@ import (
 	"encoding/binary"
 	"io"
 	"time"
+	"io/ioutil"
+	"regexp"
 )
 
 const (
 	timeout = 10 * time.Second
 	maxLogSize = 1 * 1024 * 1024 * 1024
 	backupLogDateFormat = "2006-01-02T15-04-05.000"
+)
+
+var (
+	backupFilePattern = regexp.MustCompile(`.+-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}\.\d{3}\.log$`)
 )
 
 type Msg struct {
@@ -156,10 +162,36 @@ func handleConnection(conn net.Conn, logDir string) {
 	}
 }
 
+func gc(logPath string, maxAge time.Duration) {
+	log.Println("GC started")
+	now := time.Now()
+	files, err := ioutil.ReadDir(logPath)
+	if err != nil {
+		log.Println(err)
+		return
+	}
+	for _, f := range files {
+		if !backupFilePattern.MatchString(f.Name()) {
+			continue
+		}
+		if f.ModTime().Before(now.Add(-maxAge)) {
+			log.Println("removing log", f.Name(), f.ModTime())
+			if err := os.Remove(path.Join(logPath, f.Name())); err != nil {
+				log.Println(err)
+				continue
+			}
+		}
+	}
+	log.Println("GC finished in", time.Since(now).Seconds(), "seconds")
+}
+
+
 func main() {
 	var logPath, listen string
+	var maxAge time.Duration
 	flag.StringVar(&logPath, "log-path", "", "absolute logs path")
 	flag.StringVar(&listen, "listen", "", "listen address ip:port or :port")
+	flag.DurationVar(&maxAge, "max-age", 3 * 24 * time.Hour, "time to retain old logs based on last file modification time")
 	flag.Parse()
 
 	if logPath == "" {
@@ -170,5 +202,13 @@ func main() {
 	}
 	log.Println("log path is", logPath)
 	log.Println("listening on", listen)
+
+	go func(){
+		gc(logPath, maxAge)
+		ticker := time.NewTicker(time.Minute * 10).C
+		for range ticker {
+			gc(logPath, maxAge)
+		}
+	}()
 	log.Panic(listenAndServe(listen, logPath))
 }
