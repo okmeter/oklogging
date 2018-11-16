@@ -11,7 +11,7 @@ import (
 	"io"
 	"time"
 	"io/ioutil"
-	"regexp"
+	"sync"
 )
 
 const (
@@ -21,7 +21,8 @@ const (
 )
 
 var (
-	backupFilePattern = regexp.MustCompile(`.+-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}\.\d{3}\.log$`)
+	openFiles map[string]struct{}
+	lock sync.RWMutex
 )
 
 type Msg struct {
@@ -139,7 +140,18 @@ func handleConnection(conn net.Conn, logDir string) {
 		log.Println(err)
 		return
 	}
-	defer f.Close()
+
+	lock.Lock()
+	openFiles[f.Name()] = struct{}{}
+	lock.Unlock()
+
+	defer func() {
+		f.Close()
+		lock.Lock()
+		delete(openFiles, f.Name())
+		lock.Unlock()
+	}()
+
 	for {
 		if err := readMsg(conn, msg, 0); err != nil {
 			log.Println("failed to read msg from", conn.RemoteAddr(), err)
@@ -162,6 +174,13 @@ func handleConnection(conn net.Conn, logDir string) {
 	}
 }
 
+func isFileOpen(name string) bool {
+	lock.RLock()
+	defer lock.RUnlock()
+	_, ok := openFiles[name]
+	return ok
+}
+
 func gc(logPath string, maxAge time.Duration) {
 	log.Println("GC started")
 	now := time.Now()
@@ -171,7 +190,7 @@ func gc(logPath string, maxAge time.Duration) {
 		return
 	}
 	for _, f := range files {
-		if !backupFilePattern.MatchString(f.Name()) {
+		if isFileOpen(f.Name()) {
 			continue
 		}
 		if f.ModTime().Before(now.Add(-maxAge)) {
@@ -185,8 +204,8 @@ func gc(logPath string, maxAge time.Duration) {
 	log.Println("GC finished in", time.Since(now).Seconds(), "seconds")
 }
 
-
 func main() {
+	openFiles = map[string]struct{}{}
 	var logPath, listen string
 	var maxAge time.Duration
 	flag.StringVar(&logPath, "log-path", "", "absolute logs path")
